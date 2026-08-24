@@ -20,7 +20,7 @@ Meeting Room:基于 Meetily 改造的独立 web 服务端:面向**本地自部�
 │  └─ internal/store      sqlx + migrations   │
 └──────┬──────────┬───────────┬──────────────┘
        ▼          ▼           ▼
-  SQLite 单文件   ./data 目录   转录服务(本地或局域网)
+  SQLite 单文件   ./data 目录   asr-service/(自带,本地 CPU 推理)
 ```
 
 设计要点(从桌面版实测得出,勿改):
@@ -32,17 +32,33 @@ Meeting Room:基于 Meetily 改造的独立 web 服务端:面向**本地自部�
 
 ## 快速开始
 
-只需要 Go 和 ffmpeg,数据库随程序自带(SQLite 单文件,首次运行自动创建):
+整套东西跑在你自己的机器上,音频、转录和数据库都不出本机。分两部分:
+
+**1. 转录服务**(Python,CPU 推理,只需装一次)
+
+```bash
+cd asr-service
+./install.sh     # 前置检查 + 依赖(首次 3-10 分钟)
+./start.sh       # 启动在 127.0.0.1:8100
+./warmup.sh      # 预热,触发模型下载(首次 2.1GB)
+./selftest.sh    # 自检,6 项全绿才算装好
+```
+
+需要 ffmpeg、Python 3.10-3.12、8GB 以上内存。细节见 [asr-service/README.md](asr-service/README.md)。
+
+**2. 主服务**(Go,单二进制,数据库自带)
 
 ```bash
 go build -o meeting-room ./cmd/server
 ./meeting-room                      # 打开 http://localhost:8090
 ```
 
-数据库和音频都在 `./data/` 下,备份就是复制这个目录。转录服务地址、纪要 LLM、
-日历订阅等都在页面的设置里配,不用改配置文件。
+首次打开后在设置里把转录服务地址填成 `http://127.0.0.1:8100/v1`,选 `fun-asr-nano-diarize`
+模型;纪要用的 LLM(Ollama 等 OpenAI 兼容服务)也在同一页配置。
 
-想跑在容器里也可以:`cp .env.example .env && docker compose up --build`。
+数据库和音频都在 `./data/` 下,备份就是复制这个目录。
+
+想跑在容器里也可以:`cp .env.example .env && docker compose up --build`(仅主服务)。
 
 冒烟测试:
 
@@ -93,6 +109,12 @@ curl -H "Authorization: Bearer $TOKEN" http://localhost:8090/api/v1/meetings/<id
 
 产品形态与音频编排思路来自 [Meetily](https://github.com/Zackriya-Solutions/meetily)(MIT)的桌面版。
 本项目是独立实现的 Go 服务端 + Web 前端,不含上游代码。
+
+转录服务基于 [FunASR](https://github.com/modelscope/FunASR)(Apache-2.0)。模型不随仓库分发,
+由 `warmup.sh` 在首次运行时从 ModelScope 下载,各自适用其自身许可证:
+语音识别 [Fun-ASR-Nano-2512](https://modelscope.cn/models/FunAudioLLM/Fun-ASR-Nano-2512)、
+声纹 [CAM++](https://modelscope.cn/models/iic/speech_campplus_sv_zh-cn_16k-common)(Apache-2.0)。
+商用前请自行核对模型页面的授权条款。
 
 ## 许可证
 

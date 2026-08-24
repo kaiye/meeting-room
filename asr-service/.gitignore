@@ -1,0 +1,5 @@
+# 运行时生成，不要提交
+.venv/
+funasr_api.log
+test.wav
+__pycache__/
