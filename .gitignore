@@ -1,0 +1,7 @@
+/data/
+.env
+*.log
+logs/
+node_modules/
+frontend/dist/
+.worktrees/

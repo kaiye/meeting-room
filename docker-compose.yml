@@ -1,0 +1,27 @@
+# Optional. Meeting Room is a single binary with an embedded SQLite database:
+# `go build ./cmd/server && ./server` needs nothing else. This file is here for
+# people who would rather run it as a container.
+services:
+  server:
+    build: .
+    environment:
+      # Empty = no auth. Fine for a local install; set a token if you expose
+      # the port to your network.
+      MEETING_ROOM_API_TOKEN: ${MEETING_ROOM_API_TOKEN:-}
+      # Optional bootstrap defaults only -- the transcription service is
+      # normally configured in the settings UI and stored in the database.
+      # host.docker.internal reaches a service running on the docker host.
+      TRANSCRIBE_BASE_URL: ${TRANSCRIBE_BASE_URL:-}
+      TRANSCRIBE_MODEL: ${TRANSCRIBE_MODEL:-gpt-4o-transcribe-diarize}
+      TRANSCRIBE_API_KEY: ${TRANSCRIBE_API_KEY:-}
+      TRANSCRIBE_CHUNK_SECONDS: ${TRANSCRIBE_CHUNK_SECONDS:-600}
+    volumes:
+      # Database and audio both live here: back it up by copying the directory.
+      - meeting-room-data:/data
+    ports:
+      - "8090:8090"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  meeting-room-data:

@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Meeting Room</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --line:#e3e6ea; --text:#1c2733; --muted:#68727d; --accent:#2563eb; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif; background:var(--bg); color:var(--text); }
+  header { background:var(--card); border-bottom:1px solid var(--line); padding:14px 24px; display:flex; align-items:center; gap:12px; }
+  header h1 { font-size:18px; margin:0; }
+  header .tag { font-size:12px; color:var(--muted); }
+  main { max-width:1080px; margin:24px auto; padding:0 16px; display:grid; grid-template-columns:380px 1fr; gap:20px; align-items:start; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; margin-bottom:20px; }
+  .card h2 { font-size:15px; margin:0 0 12px; }
+  label { display:block; font-size:12px; color:var(--muted); margin:10px 0 4px; }
+  input, select { width:100%; padding:7px 10px; border:1px solid var(--line); border-radius:6px; font-size:13px; }
+  button { padding:7px 14px; border:none; border-radius:6px; background:var(--accent); color:#fff; font-size:13px; cursor:pointer; margin-top:10px; }
+  button.secondary { background:#eef1f5; color:var(--text); }
+  button.danger { background:#dc2626; }
+  button:disabled { opacity:.5; cursor:default; }
+  .row { display:flex; gap:8px; }
+  .hint { font-size:12px; color:var(--muted); margin-top:8px; min-height:16px; }
+  .meeting { padding:10px 12px; border:1px solid var(--line); border-radius:8px; margin-bottom:8px; cursor:pointer; }
+  .meeting:hover { border-color:var(--accent); }
+  .meeting.active { border-color:var(--accent); background:#f0f5ff; }
+  .meeting .t { font-size:14px; font-weight:600; display:flex; justify-content:space-between; gap:8px; }
+  .meeting .m { font-size:12px; color:var(--muted); margin-top:2px; }
+  .status { font-size:11px; padding:1px 8px; border-radius:99px; white-space:nowrap; }
+  .status.completed { background:#dcfce7; color:#166534; }
+  .status.processing, .status.created { background:#fef9c3; color:#854d0e; }
+  .status.failed { background:#fee2e2; color:#991b1b; }
+  .status.recording { background:#fee2e2; color:#991b1b; animation:pulse 1.5s infinite; }
+  @keyframes pulse { 50% { opacity:.5; } }
+  button.rec-on { background:#dc2626; }
+  .check { display:flex; align-items:center; gap:6px; font-size:13px; margin-top:8px; }
+  .check input { width:auto; }
+  .seg.live { opacity:.75; }
+  .bar { height:4px; background:#e5e9ef; border-radius:2px; margin-top:6px; overflow:hidden; display:none; }
+  .bar i { display:block; height:100%; background:var(--accent); width:0; transition:width .3s; }
+  .seg { display:flex; gap:10px; padding:7px 4px; border-bottom:1px solid #f1f3f5; font-size:13px; line-height:1.6; }
+  .seg .ts { color:var(--muted); font-size:11px; min-width:52px; padding-top:3px; }
+  .seg .sp { font-weight:700; min-width:38px; padding-top:1px; }
+  #transcript { max-height:70vh; overflow-y:auto; }
+  details summary { cursor:pointer; font-size:15px; font-weight:600; }
+  details .card-inner { padding-top:8px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Meeting Room</h1>
+  <span class="tag">开发预览版 · 上传转录 · 说话人分离</span>
+</header>
+<main>
+<section>
+  <div class="card">
+    <h2>导入音频</h2>
+    <input type="file" id="file" accept="audio/*,video/*">
+    <label>标题(默认取文件名)</label>
+    <input id="title" placeholder="周会">
+    <label>语言</label>
+    <select id="language">
+      <option value="auto">自动检测</option>
+      <option value="zh" selected>中文</option>
+      <option value="en">English</option>
+    </select>
+    <button id="upload">上传并转录</button>
+    <div class="hint" id="uploadHint"></div>
+  </div>
+
+  <div class="card">
+    <h2>实时录音</h2>
+    <label>标题</label>
+    <input id="liveTitle" placeholder="实时会议">
+    <label>语言</label>
+    <select id="liveLang">
+      <option value="zh" selected>中文</option>
+      <option value="en">English</option>
+      <option value="auto">自动检测</option>
+    </select>
+    <label class="check"><input type="checkbox" id="tabAudio"> 同时采集标签页音频(浏览器会弹共享选择)</label>
+    <button id="recBtn">🎙️ 开始录音</button>
+    <div class="hint" id="recHint">粗稿每 5 分钟出一段;停止后自动生成说话人全程一致的终稿。</div>
+  </div>
+
+  <div class="card">
+    <details>
+      <summary>转录服务设置</summary>
+      <div class="card-inner">
+        <label>服务地址(本地 / 局域网 / https://api.openai.com/v1)</label>
+        <input id="tBase" placeholder="http://127.0.0.1:7860/v1">
+        <label>模型</label>
+        <input id="tModel" placeholder="gpt-4o-transcribe-diarize">
+        <label>API Key(本地服务留空)</label>
+        <input id="tKey" type="password">
+        <div class="row">
+          <button class="secondary" id="tTest">测试连接</button>
+          <button id="tSave">保存</button>
+        </div>
+        <div class="hint" id="tHint"></div>
+      </div>
+    </details>
+  </div>
+
+  <div class="card">
+    <details>
+      <summary>总结 LLM 设置</summary>
+      <div class="card-inner">
+        <label>服务地址(如 Ollama:http://127.0.0.1:11434/v1)</label>
+        <input id="sBase">
+        <label>模型</label>
+        <input id="sModel" placeholder="qwen3.5:4b">
+        <label>API Key</label>
+        <input id="sKey" type="password">
+        <button id="sSave">保存</button>
+        <div class="hint" id="sHint">总结生成功能开发中,先保存配置。</div>
+      </div>
+    </details>
+  </div>
+
+  <div class="card">
+    <h2>会议列表</h2>
+    <div id="meetings"></div>
+  </div>
+</section>
+
+<section class="card">
+  <h2 id="tTitle">转录结果</h2>
+  <div class="row" id="tActions" style="display:none">
+    <button class="secondary" id="retranscribe">重新转录</button>
+    <button class="danger" id="del">删除会议</button>
+  </div>
+  <div id="transcript"><div class="hint">左侧选择一个会议查看转录。</div></div>
+</section>
+</main>
+
+<script>
+const api = (path, opts) => fetch('/api/v1' + path, opts).then(async r => {
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || ('HTTP ' + r.status));
+  return r.json();
+});
+const $ = id => document.getElementById(id);
+let current = null;
+
+const spColors = {};
+const palette = ['#2563eb','#dc2626','#059669','#d97706','#7c3aed','#0891b2','#be185d','#4d7c0f'];
+const spColor = sp => spColors[sp] ??= palette[Object.keys(spColors).length % palette.length];
+const fmtTs = ms => { const s = Math.floor(ms/1000); return String(Math.floor(s/60)).padStart(2,'0') + ':' + String(s%60).padStart(2,'0'); };
+
+async function loadSettings() {
+  try {
+    const s = await api('/settings');
+    $('tBase').value = s.transcribe.baseUrl || '';
+    $('tModel').value = s.transcribe.model || '';
+    $('tKey').value = s.transcribe.apiKey || '';
+    $('sBase').value = s.summary.baseUrl || '';
+    $('sModel').value = s.summary.model || '';
+    $('sKey').value = s.summary.apiKey || '';
+  } catch (e) { console.error(e); }
+}
+
+const tBody = () => ({ baseUrl: $('tBase').value.trim(), model: $('tModel').value.trim(), apiKey: $('tKey').value.trim() });
+$('tTest').onclick = async () => {
+  $('tHint').textContent = '测试中…';
+  try {
+    const r = await api('/settings/transcribe/test', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(tBody()) });
+    $('tHint').textContent = r.ok ? '✅ 连接成功: ' + r.baseUrl : '❌ ' + r.error;
+  } catch (e) { $('tHint').textContent = '❌ ' + e.message; }
+};
+$('tSave').onclick = async () => {
+  try { await api('/settings/transcribe', { method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(tBody()) }); $('tHint').textContent = '已保存'; }
+  catch (e) { $('tHint').textContent = '❌ ' + e.message; }
+};
+$('sSave').onclick = async () => {
+  const body = { baseUrl: $('sBase').value.trim(), model: $('sModel').value.trim(), apiKey: $('sKey').value.trim() };
+  try { await api('/settings/summary', { method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) }); $('sHint').textContent = '已保存'; }
+  catch (e) { $('sHint').textContent = '❌ ' + e.message; }
+};
+
+$('upload').onclick = async () => {
+  const f = $('file').files[0];
+  if (!f) { $('uploadHint').textContent = '请先选择音频文件'; return; }
+  const fd = new FormData();
+  fd.append('file', f);
+  if ($('title').value.trim()) fd.append('title', $('title').value.trim());
+  fd.append('language', $('language').value);
+  $('upload').disabled = true;
+  $('uploadHint').textContent = '上传中…';
+  try {
+    const r = await api('/meetings/import', { method:'POST', body: fd });
+    $('uploadHint').textContent = '已入队,转录进行中(大文件按 10 分钟/段串行,请耐心等待)';
+    $('file').value = ''; $('title').value = '';
+    await loadMeetings();
+    selectMeeting(r.meeting.id);
+  } catch (e) { $('uploadHint').textContent = '❌ ' + e.message; }
+  $('upload').disabled = false;
+};
+
+async function loadMeetings() {
+  const ms = await api('/meetings');
+  const box = $('meetings');
+  box.innerHTML = ms.length ? '' : '<div class="hint">还没有会议,上传一个音频试试。</div>';
+  for (const m of ms) {
+    const div = document.createElement('div');
+    div.className = 'meeting' + (m.id === current ? ' active' : '');
+    div.dataset.id = m.id;
+    const dur = m.durationSeconds ? Math.round(m.durationSeconds/60) + ' 分钟 · ' : '';
+    const statusText = { created:'排队中', processing:'转录中', completed:'完成', failed:'失败', recording:'录音中' }[m.status] || m.status;
+    div.innerHTML = `<div class="t"><span>${esc(m.title)}</span><span class="status ${m.status}">${statusText}</span></div>
+      <div class="m">${dur}${new Date(m.createdAt).toLocaleString()}</div>
+      <div class="bar"><i></i></div><div class="m prog"></div>`;
+    div.onclick = () => selectMeeting(m.id);
+    box.appendChild(div);
+  }
+}
+
+async function selectMeeting(id) {
+  current = id;
+  document.querySelectorAll('.meeting').forEach(d => d.classList.toggle('active', d.dataset.id === id));
+  $('tActions').style.display = 'flex';
+  const box = $('transcript');
+  try {
+    const detail = await api('/meetings/' + id);
+    $('tTitle').textContent = detail.meeting.title;
+    if (detail.job && detail.job.status === 'failed') {
+      box.innerHTML = `<div class="hint">❌ 转录失败:${esc(detail.job.error || '未知错误')}</div>`;
+      return;
+    }
+    const segs = await api('/meetings/' + id + '/transcript');
+    if (!segs.length) { box.innerHTML = '<div class="hint">暂无转录内容(可能仍在转录中)。</div>'; return; }
+    box.innerHTML = '';
+    for (const s of segs) {
+      const div = document.createElement('div');
+      div.className = 'seg';
+      const sp = s.speaker ? `<span class="sp" style="color:${spColor(s.speaker)}">${esc(s.speaker)}</span>` : '';
+      div.innerHTML = `<span class="ts">${fmtTs(s.startMs)}</span>${sp}<span>${esc(s.text)}</span>`;
+      box.appendChild(div);
+    }
+  } catch (e) { box.innerHTML = `<div class="hint">❌ ${esc(e.message)}</div>`; }
+}
+
+$('retranscribe').onclick = async () => {
+  if (!current) return;
+  try { await api('/meetings/' + current + '/retranscribe', { method:'POST' }); await loadMeetings(); }
+  catch (e) { alert(e.message); }
+};
+$('del').onclick = async () => {
+  if (!current || !confirm('确认删除这个会议及其音频?')) return;
+  try { await api('/meetings/' + current, { method:'DELETE' }); current = null; $('tTitle').textContent = '转录结果'; $('tActions').style.display = 'none'; $('transcript').innerHTML = '<div class="hint">已删除。</div>'; await loadMeetings(); }
+  catch (e) { alert(e.message); }
+};
+
+function esc(s) { const d = document.createElement('span'); d.textContent = s ?? ''; return d.innerHTML; }
+
+function appendLiveSegments(meetingId, segments, provisional) {
+  if (meetingId !== current) return;
+  const box = $('transcript');
+  if (box.querySelector('.hint')) box.innerHTML = '';
+  for (const s of segments) {
+    const div = document.createElement('div');
+    div.className = 'seg' + (provisional ? ' live' : '');
+    const sp = s.speaker ? `<span class="sp" style="color:${spColor(s.speaker)}">${esc(s.speaker)}</span>` : '';
+    div.innerHTML = `<span class="ts">${fmtTs(s.startMs)}</span>${sp}<span>${esc(s.text)}</span>`;
+    box.appendChild(div);
+  }
+  box.scrollTop = box.scrollHeight;
+}
+
+function connectWS() {
+  const ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/api/v1/ws');
+  ws.onmessage = ev => {
+    const msg = JSON.parse(ev.data);
+    if (msg.type === 'live-transcript') { appendLiveSegments(msg.meetingId, msg.segments, true); return; }
+    if (msg.type === 'live-error') {
+      if (msg.meetingId === current) $('recHint').textContent = '⚠️ 粗稿转录出错(不影响终稿): ' + msg.error;
+      return;
+    }
+    if (msg.type !== 'job-progress') return;
+    const div = document.querySelector(`.meeting[data-id="${msg.meetingId}"]`);
+    if (div) {
+      const bar = div.querySelector('.bar'), prog = div.querySelector('.prog');
+      if (msg.status === 'running') {
+        bar.style.display = 'block';
+        bar.querySelector('i').style.width = msg.progress + '%';
+        prog.textContent = (msg.message || '') + ' ' + msg.progress + '%';
+      } else {
+        loadMeetings().then(() => { if (msg.meetingId === current) selectMeeting(current); });
+      }
+    } else {
+      loadMeetings();
+    }
+  };
+  ws.onclose = () => setTimeout(connectWS, 3000);
+}
+
+// ---------- 实时录音 ----------
+const workletCode = `
+class PCMCapture extends AudioWorkletProcessor {
+  process(inputs) {
+    const input = inputs[0];
+    if (input && input.length && input[0].length) {
+      const n = input[0].length;
+      const mono = new Float32Array(n);
+      for (let c = 0; c < input.length; c++) {
+        const ch = input[c];
+        for (let i = 0; i < n; i++) mono[i] += ch[i] / input.length;
+      }
+      this.port.postMessage(mono, [mono.buffer]);
+    }
+    return true;
+  }
+}
+registerProcessor('pcm-capture', PCMCapture);
+`;
+
+let rec = null; // { ws, audioCtx, streams, timer, startedAt, meetingId }
+
+$('recBtn').onclick = () => rec ? stopRecording() : startRecording();
+
+async function startRecording() {
+  $('recBtn').disabled = true;
+  $('recHint').textContent = '请求麦克风权限…';
+  try {
+    const streams = [];
+    const mic = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+    streams.push(mic);
+    let tabStream = null;
+    if ($('tabAudio').checked) {
+      tabStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+      if (!tabStream.getAudioTracks().length) {
+        $('recHint').textContent = '⚠️ 所选共享源没有音频(需勾选"共享标签页音频"),仅录麦克风';
+        tabStream.getTracks().forEach(t => t.stop());
+        tabStream = null;
+      } else { streams.push(tabStream); }
+    }
+
+    const ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/api/v1/live');
+    ws.binaryType = 'arraybuffer';
+    await new Promise((res, rej) => { ws.onopen = res; ws.onerror = () => rej(new Error('无法连接服务器')); });
+    ws.send(JSON.stringify({ type: 'start', title: $('liveTitle').value.trim(), language: $('liveLang').value }));
+
+    const meetingId = await new Promise((res, rej) => {
+      ws.onmessage = ev => {
+        const m = JSON.parse(ev.data);
+        if (m.type === 'started') res(m.meetingId);
+        else if (m.type === 'error') rej(new Error(m.error));
+      };
+      setTimeout(() => rej(new Error('服务器无响应')), 5000);
+    });
+    ws.onmessage = ev => {
+      const m = JSON.parse(ev.data);
+      if (m.type === 'stopped') { ws.close(); loadMeetings().then(() => selectMeeting(m.meetingId)); }
+    };
+
+    const audioCtx = new AudioContext();
+    await audioCtx.audioWorklet.addModule(URL.createObjectURL(new Blob([workletCode], { type: 'application/javascript' })));
+    const node = new AudioWorkletNode(audioCtx, 'pcm-capture', { numberOfOutputs: 0 });
+    for (const st of streams) {
+      const tracks = st.getAudioTracks();
+      if (tracks.length) audioCtx.createMediaStreamSource(new MediaStream(tracks)).connect(node);
+    }
+
+    // 降采样到 16kHz s16le,每 500ms 发送一帧
+    let floatBuf = new Float32Array(0);
+    node.port.onmessage = e => {
+      const b = e.data;
+      const merged = new Float32Array(floatBuf.length + b.length);
+      merged.set(floatBuf); merged.set(b, floatBuf.length);
+      floatBuf = merged;
+    };
+    const ratio = audioCtx.sampleRate / 16000;
+    const timer = setInterval(() => {
+      const outLen = Math.floor((floatBuf.length - 1) / ratio);
+      if (outLen <= 0 || ws.readyState !== 1) return;
+      const out = new Int16Array(outLen);
+      for (let i = 0; i < outLen; i++) {
+        const pos = i * ratio, i0 = Math.floor(pos), frac = pos - i0;
+        const v = floatBuf[i0] * (1 - frac) + (floatBuf[i0 + 1] ?? floatBuf[i0]) * frac;
+        out[i] = Math.max(-32768, Math.min(32767, Math.round(v * 32767)));
+      }
+      floatBuf = floatBuf.slice(Math.ceil(outLen * ratio));
+      ws.send(out.buffer);
+      const secs = Math.floor((Date.now() - rec.startedAt) / 1000);
+      $('recHint').textContent = `🔴 录音中 ${String(Math.floor(secs/60)).padStart(2,'0')}:${String(secs%60).padStart(2,'0')}` +
+        (tabStream ? '(麦克风+标签页)' : '(麦克风)') + ' · 粗稿每 5 分钟一段';
+    }, 500);
+
+    rec = { ws, audioCtx, streams, timer, startedAt: Date.now(), meetingId };
+    $('recBtn').textContent = '⏹ 停止录音';
+    $('recBtn').classList.add('rec-on');
+    await loadMeetings();
+    selectMeeting(meetingId);
+    $('transcript').innerHTML = '<div class="hint">🔴 录音中…粗稿将陆续出现在这里(约有几分钟延迟)。</div>';
+  } catch (e) {
+    $('recHint').textContent = '❌ ' + e.message;
+    stopTracks();
+  }
+  $('recBtn').disabled = false;
+}
+
+function stopTracks() {
+  if (!rec) return;
+  rec.streams?.forEach(st => st.getTracks().forEach(t => t.stop()));
+}
+
+function stopRecording() {
+  if (!rec) return;
+  clearInterval(rec.timer);
+  stopTracks();
+  rec.audioCtx.close();
+  if (rec.ws.readyState === 1) rec.ws.send(JSON.stringify({ type: 'stop' }));
+  $('recHint').textContent = '已停止,正在生成终稿(说话人全程一致)…';
+  $('recBtn').textContent = '🎙️ 开始录音';
+  $('recBtn').classList.remove('rec-on');
+  rec = null;
+}
+
+window.addEventListener('beforeunload', () => { if (rec) stopRecording(); });
+
+loadSettings(); loadMeetings(); connectWS();
+setInterval(loadMeetings, 30000);
+</script>
+</body>
+</html>
