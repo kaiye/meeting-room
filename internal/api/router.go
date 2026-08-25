@@ -1,6 +1,5 @@
-// Package api exposes the REST + WebSocket surface. This replaces the
-// desktop app's Tauri command layer: each former invoke() maps onto an
-// HTTP endpoint, and emit() events arrive over /api/v1/ws.
+// Package api exposes the REST + WebSocket surface: one HTTP endpoint per
+// operation, with server-pushed events delivered over /api/v1/ws.
 package api
 
 import (

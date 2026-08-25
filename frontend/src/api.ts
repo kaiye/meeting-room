@@ -1,5 +1,5 @@
-// REST + WebSocket client. This module is the web equivalent of the desktop
-// app's Tauri IPC layer: invoke() -> api(), listen() -> onWSMessage().
+// REST + WebSocket client: api() does request/response, onWSMessage()
+// subscribes to server-pushed events.
 
 export type Meeting = {
   id: string

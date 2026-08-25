@@ -1,6 +1,6 @@
-// Package ws is the WebSocket hub that replaces Tauri's emit() events:
-// job progress (and later, live transcript updates) are broadcast to all
-// connected clients as JSON messages.
+// Package ws is the WebSocket hub for server-pushed events: job progress
+// and live transcript updates are broadcast to all connected clients as
+// JSON messages.
 package ws
 
 import (
