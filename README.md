@@ -108,12 +108,6 @@ curl -H "Authorization: Bearer $TOKEN" http://localhost:8090/api/v1/meetings/<id
 
 **认证**:`MEETING_ROOM_API_TOKEN` 为空(默认)= 不鉴权,本地随便用;部署给团队时设一个 token,请求带 `Authorization: Bearer <token>`(WS 用 `?token=`)。
 
-## Roadmap
-
-- [ ] **多用户**:users/teams 表 + 会话认证,替换共享 token
-- [ ] **检索**:转录全文搜索(SQLite FTS5,自带中文 unicode61 分词)
-- [ ] 存储保留策略(音频文件生命周期)、单文件时长限额、上传大小限制
-
 ## 致谢
 
 转录服务基于 [FunASR](https://github.com/modelscope/FunASR)(Apache-2.0)。模型不随仓库分发,
