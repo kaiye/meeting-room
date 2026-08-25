@@ -3,7 +3,7 @@
 // spans get an amber underline (click for a popover), all comments collect
 // in the middle pane, and regeneration folds them into the LLM prompt.
 // The bug icon on the summary pane reveals exactly what was sent to the LLM.
-import { BookPlus, Bug, Check, ChevronDown, Copy, Download, FileText, Info, Loader2, MessageSquarePlus, MessagesSquare, Mic, Pencil, RefreshCw, Scissors, Send, Sparkles, Square, Strikethrough, Trash2, Upload, Wand2 } from 'lucide-react'
+import { AlertCircle, BookPlus, Bug, Check, ChevronDown, Copy, Download, FileText, Info, Loader2, MessageSquarePlus, MessagesSquare, Mic, Pencil, RefreshCw, Scissors, Send, Sparkles, Square, Strikethrough, Trash2, Upload, Wand2 } from 'lucide-react'
 import { marked } from 'marked'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
@@ -844,6 +844,12 @@ export default function MeetingDetails() {
   }
 
   const transcribing = job && job.status === 'running' && job.type !== 'summarize'
+  // A finished-but-failed transcribe job: the spinner simply disappears,
+  // so without this the click looks like it did nothing. worker.go stores
+  // the reason on the job and emits it with the final job-progress.
+  const failedJob = job && job.status === 'failed' && job.type !== 'summarize' ? job : null
+  // Cancel shares the failed status (ErrCancelled); it is a user action, not a fault.
+  const transcribeCancelled = failedJob?.error === '已取消'
   const generating = summary?.status === 'generating'
   // While recording finalizes or transcription runs, the transcript is
   // still growing — generating now would miss the ending.
@@ -966,6 +972,12 @@ export default function MeetingDetails() {
                 {jobTiming && <span className="text-gray-400">· {jobTiming}</span>}
               </span>
             )}
+            {failedJob && (
+              <span className={`flex items-center gap-1 text-xs ${transcribeCancelled ? 'text-gray-400' : 'text-red-600'}`}>
+                {transcribeCancelled ? <Square size={11} /> : <AlertCircle size={12} />}
+                {transcribeCancelled ? '已取消' : '转录失败'}
+              </span>
+            )}
             <span className="ml-auto flex gap-1">
               <button onClick={openTranscribeDebug} title="查看每次转录请求的接口与参数" className="rounded p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600">
                 <Bug size={14} />
@@ -989,6 +1001,14 @@ export default function MeetingDetails() {
               )}
             </span>
           </div>
+
+          {failedJob && !transcribeCancelled && (
+            <div className="border-b border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+              <p className="mb-1 font-medium">转录失败,转录内容保持不变</p>
+              <p className="break-words">{failedJob.error || '未知错误'}</p>
+              <p className="mt-1 text-red-500">修正后可点右上角 ⟳ 重新转录。</p>
+            </div>
+          )}
 
           {speakers.length > 0 && (
             <div className="flex flex-wrap items-center gap-1.5 border-b border-gray-100 px-3 py-2">
