@@ -53,6 +53,16 @@ go build -o meeting-room ./cmd/server
 ./meeting-room                      # 打开 http://localhost:8090
 ```
 
+界面是预构建的:`frontend/dist/` 随仓库分发,clone 下来直接 `go build` 就是完整的 Web UI,
+不需要装 Node。只有改了 `frontend/src/` 才需要重新构建:
+
+```bash
+cd frontend && pnpm install && pnpm build    # npm / yarn 同理
+```
+
+服务启动时优先托管 `frontend/dist/`(路径可用 `MEETING_ROOM_WEB_DIR` 覆盖);
+该目录不存在时回退到编译进二进制的简版页面,只够应急,功能不全。
+
 首次打开后在设置里把转录服务地址填成 `http://127.0.0.1:8100/v1`,选 `fun-asr-nano-diarize`
 模型;纪要用的 LLM(Ollama 等 OpenAI 兼容服务)也在同一页配置。
 
