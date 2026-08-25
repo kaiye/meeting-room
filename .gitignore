@@ -3,6 +3,5 @@
 *.log
 logs/
 node_modules/
-frontend/dist/
 /meeting-room
 .worktrees/
