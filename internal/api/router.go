@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/gorilla/mux"
 
@@ -33,10 +34,18 @@ type Server struct {
 	cfg config.Config
 	st  *store.Store
 	hub *ws.Hub
+
+	// Meetings this process is recording or finalizing. The "recording" status
+	// in the DB cannot distinguish "a live socket is feeding it" from "the
+	// process that owned it died", and nothing stops a second instance from
+	// opening the same data dir — so the manual stop below consults this
+	// map, which only ever answers for the process that owns the socket.
+	liveMu     sync.Mutex
+	liveActive map[string]bool
 }
 
 func NewRouter(cfg config.Config, st *store.Store, hub *ws.Hub) *mux.Router {
-	s := &Server{cfg: cfg, st: st, hub: hub}
+	s := &Server{cfg: cfg, st: st, hub: hub, liveActive: map[string]bool{}}
 	r := mux.NewRouter()
 	r.HandleFunc("/healthz", s.health).Methods(http.MethodGet)
 
@@ -53,6 +62,7 @@ func NewRouter(cfg config.Config, st *store.Store, hub *ws.Hub) *mux.Router {
 	v1.HandleFunc("/meetings/{id}/transcribe-debug", s.listTranscribeDebug).Methods(http.MethodGet)
 	v1.HandleFunc("/meetings/{id}/summary-debug", s.listSummaryDebug).Methods(http.MethodGet)
 	v1.HandleFunc("/meetings/{id}/summarize/cancel", s.cancelSummarize).Methods(http.MethodPost)
+	v1.HandleFunc("/meetings/{id}/recording/stop", s.stopStuckRecording).Methods(http.MethodPost)
 	v1.HandleFunc("/meetings/{id}/retranscribe", s.retranscribe).Methods(http.MethodPost)
 	v1.HandleFunc("/meetings/{id}/summarize", s.generateSummary).Methods(http.MethodPost)
 	v1.HandleFunc("/meetings/{id}/summary", s.getSummary).Methods(http.MethodGet)

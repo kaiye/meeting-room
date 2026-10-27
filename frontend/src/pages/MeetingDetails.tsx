@@ -13,44 +13,10 @@ import Modal from '../components/Modal'
 import ParticipantPicker from '../components/ParticipantPicker'
 import SpeakerEnrollDialog from '../components/SpeakerEnrollDialog'
 import { recorder } from '../recorder'
+import { applySummaryRevisions, normalizeBold } from '../summaryRevisions'
 
 type SelInfo = { target: 'transcript' | 'summary'; quote: string; anchor: string; x: number; y: number }
 type DraftKind = 'rewrite' | 'comment'
-
-// CommonMark refuses to close **bold** when the closer has a space before
-// it (`**标题: **`) or sits between CJK punctuation and a letter
-// (`**要点。**后续`) — both are everyday LLM output in Chinese minutes.
-// Normalizing the spaces keeps the text valid Markdown, so rendering AND
-// the copied/downloaded .md are fixed at once (code spans untouched).
-function normalizeBold(md: string): string {
-  // Pair the delimiters up per line: a regex can't tell an opener from a
-  // closer, so it would swallow the text sitting between two bold runs,
-  // and `\s` would let a match span lines and eat list markers.
-  const fixLine = (line: string): string => {
-    const parts = line.split('**')
-    if (parts.length < 3) return line
-    const pairs = Math.floor((parts.length - 1) / 2)
-    let out = parts[0]
-    for (let i = 0; i < pairs; i++) {
-      const body = parts[i * 2 + 1]
-      const after = parts[i * 2 + 2]
-      const trimmed = body.trim()
-      if (!trimmed) {
-        out += `**${body}**${after}`
-        continue
-      }
-      // A closer glued to a word (CJK especially) needs a space to count.
-      const gap = /^[^\s\p{P}]/u.test(after) ? ' ' : ''
-      out += `**${trimmed}**${gap}${after}`
-    }
-    if ((parts.length - 1) % 2 === 1) out += `**${parts[parts.length - 1]}`
-    return out
-  }
-  return md
-    .split(/(```[\s\S]*?```|`[^`\n]*`)/g)
-    .map((part, i) => (i % 2 === 1 ? part : part.split('\n').map(fixLine).join('\n')))
-    .join('')
-}
 
 const REWRITE_MARK = 'cursor-pointer underline decoration-amber-400 decoration-2 underline-offset-2'
 const COMMENT_MARK = 'cursor-pointer underline decoration-sky-400 decoration-2 underline-offset-2'
@@ -157,6 +123,7 @@ export default function MeetingDetails() {
   const [promptDraft, setPromptDraft] = useState('')
   const [copied, setCopied] = useState<'transcript' | 'summary' | null>(null)
   const [actionErr, setActionErr] = useState('')
+  const [stopping, setStopping] = useState(false)
   const [labeling, setLabeling] = useState<Segment | null>(null)
   const [naming, setNaming] = useState(false)
   const [editingTitle, setEditingTitle] = useState(false)
@@ -391,6 +358,28 @@ export default function MeetingDetails() {
       setActionErr('续录失败:' + e.message)
     }
     setResuming(false)
+  }
+
+  // A meeting stays "recording" until its live WebSocket closes cleanly, so a
+  // crash or a restart strands it there — and while stranded it cannot be
+  // summarized, truncated or resumed. Only a person can say the recording is
+  // really over: the server has no way to tell a dead session from a live one
+  // it does not own.
+  const stopStranded = async () => {
+    setStopping(true)
+    setActionErr('')
+    try {
+      const r = await api<{ status: string; untranscribedTailMs?: number }>(
+        `/meetings/${id}/recording/stop`,
+        { method: 'POST' },
+      )
+      if (r.status === 'failed') setActionErr('这场录制没有录到音频,已标记为失败')
+      load()
+      refetchMeetings()
+    } catch (e: any) {
+      setActionErr('标记停止失败:' + e.message)
+    }
+    setStopping(false)
   }
 
   const doTruncate = async () => {
@@ -745,19 +734,30 @@ export default function MeetingDetails() {
     return text.trim()
   }
 
-  const appliedSummaryText = (): string => {
-    let content = summary?.content ?? ''
-    for (const c of comments) {
-      if (c.target !== 'summary' || !c.quote) continue
-      if (c.kind === 'rewrite') content = content.replace(c.quote, c.body)
-      else if (c.kind === 'delete') content = content.replace(c.quote, '')
+  const appliedSummary = (): { text: string; unapplied: Comment[] } => {
+    const { text, unapplied } = applySummaryRevisions(summary?.content ?? '', comments)
+    return { text: normalizeBold(text), unapplied }
+  }
+
+  // Revisions that could not be placed would otherwise vanish without a trace:
+  // the file just comes out missing an edit the page shows as made.
+  const reportUnapplied = (unapplied: Comment[]) => {
+    if (unapplied.length === 0) {
+      setActionErr('')
+      return
     }
-    return normalizeBold(content)
+    setActionErr(
+      `有 ${unapplied.length} 条修订相互重叠或无法定位，已停止复制和下载。请先处理这些修订后重试:` +
+        unapplied.map((c) => `「${c.quote.replace(/\s+/g, ' ').slice(0, 20)}」`).join('、'),
+    )
   }
 
   // Download the summary as a Markdown file (rewrites applied, same as copy).
   const downloadSummary = () => {
-    const blob = new Blob([appliedSummaryText()], { type: 'text/markdown;charset=utf-8' })
+    const { text, unapplied } = appliedSummary()
+    reportUnapplied(unapplied)
+    if (unapplied.length > 0) return
+    const blob = new Blob([text], { type: 'text/markdown;charset=utf-8' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
@@ -767,10 +767,15 @@ export default function MeetingDetails() {
   }
 
   const copy = (kind: 'transcript' | 'summary') => {
-    const text =
-      kind === 'transcript'
-        ? segments.map((s) => `[${fmtTs(s.startMs)}] ${s.speaker ? s.speaker + ': ' : ''}${appliedSegText(s)}`).join('\n')
-        : appliedSummaryText()
+    let text: string
+    if (kind === 'transcript') {
+      text = segments.map((s) => `[${fmtTs(s.startMs)}] ${s.speaker ? s.speaker + ': ' : ''}${appliedSegText(s)}`).join('\n')
+    } else {
+      const applied = appliedSummary()
+      reportUnapplied(applied.unapplied)
+      if (applied.unapplied.length > 0) return
+      text = applied.text
+    }
     navigator.clipboard.writeText(text)
     setCopied(kind)
     setTimeout(() => setCopied(null), 1500)
@@ -960,6 +965,23 @@ export default function MeetingDetails() {
       </div>
 
       {actionErr && <div className="border-b border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700">{actionErr}</div>}
+
+      {meeting.status === 'recording' && !liveHere && (
+        <div className="flex items-center gap-3 border-b border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-800">
+          <AlertCircle size={16} className="shrink-0" />
+          <span className="min-w-0 flex-1">
+            这场会议还停在「录制中」,但本机没有在录它 —— 多半是上次录制没有正常结束。
+            标记停止会保存已录到的音频并补转录尾巴;在此之前无法生成纪要或续录。
+          </span>
+          <button
+            onClick={stopStranded}
+            disabled={stopping}
+            className="shrink-0 rounded bg-amber-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-amber-700 disabled:opacity-40"
+          >
+            {stopping ? <Loader2 size={13} className="animate-spin" /> : '标记录制结束'}
+          </button>
+        </div>
+      )}
 
       <div className="flex min-h-0 flex-1 overflow-hidden">
         {/* LEFT: transcript */}

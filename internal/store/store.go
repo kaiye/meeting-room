@@ -146,8 +146,8 @@ type Meeting struct {
 	// CalendarUID links this recording to the calendar occurrence it was
 	// started from (empty for ad-hoc recordings).
 	CalendarUID string    `db:"calendar_uid" json:"calendarUid"`
-	CreatedAt time.Time `db:"created_at" json:"createdAt"`
-	UpdatedAt time.Time `db:"updated_at" json:"updatedAt"`
+	CreatedAt   time.Time `db:"created_at" json:"createdAt"`
+	UpdatedAt   time.Time `db:"updated_at" json:"updatedAt"`
 }
 
 func (m *Meeting) decodeParticipants() {
@@ -355,6 +355,15 @@ func (s *Store) GetSegments(ctx context.Context, meetingID string) ([]Transcript
 	return segs, err
 }
 
+// CountSegments answers "does this meeting have a transcript at all"
+// without loading one.
+func (s *Store) CountSegments(ctx context.Context, meetingID string) (int, error) {
+	var n int
+	err := s.db.GetContext(ctx, &n,
+		`SELECT COUNT(*) FROM transcript_segments WHERE meeting_id = $1`, meetingID)
+	return n, err
+}
+
 // AppendSegments adds provisional segments during live recording and fills
 // in the generated IDs (the frontend needs them for speaker labeling); the
 // final full-file pass later replaces them via ReplaceSegments.
@@ -391,6 +400,17 @@ func (s *Store) MaxSegmentWindow(ctx context.Context, meetingID string) (int, er
 	err := s.db.GetContext(ctx, &n, `
 		SELECT COALESCE(MAX(window_idx), -1) FROM transcript_segments WHERE meeting_id = $1`, meetingID)
 	return n, err
+}
+
+// MaxSegmentEndMs is how far transcription actually got: rolling live
+// passes append their segments as they finish, so the furthest segment end
+// IS the progress marker. After a crash it is the only surviving record of
+// where the in-memory rolledBytes had reached.
+func (s *Store) MaxSegmentEndMs(ctx context.Context, meetingID string) (int64, error) {
+	var ms int64
+	err := s.db.GetContext(ctx, &ms, `
+		SELECT COALESCE(MAX(end_ms), 0) FROM transcript_segments WHERE meeting_id = $1`, meetingID)
+	return ms, err
 }
 
 // DeleteSegmentsFrom drops all transcript segments at or after the given

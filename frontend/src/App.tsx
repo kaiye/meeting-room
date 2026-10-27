@@ -39,43 +39,14 @@ export default function App() {
     }
   }, [])
 
-  // First-summary automation: when a transcription finishes and the meeting
-  // has never had a summary, kick off one with the default template.
-  const autoSummarizedRef = useRef<Set<string>>(new Set())
-  const maybeAutoSummarize = useCallback(async (mid: string) => {
-    if (autoSummarizedRef.current.has(mid)) return
-    autoSummarizedRef.current.add(mid)
-    try {
-      await api(`/meetings/${mid}/summary`)
-      return // already has one (any status) — never clobber
-    } catch {}
-    try {
-      const segs = await api<unknown[]>(`/meetings/${mid}/transcript`)
-      if (segs.length === 0) return
-      const gen = (tpl: string) =>
-        api(`/meetings/${mid}/summarize`, { method: 'POST', body: JSON.stringify({ template: tpl, customPrompt: '' }) })
-      try {
-        await gen('standard')
-      } catch {
-        const tpls = await api<Array<{ id: string }>>('/summary-templates')
-        if (tpls.length > 0) await gen(tpls[0].id)
-      }
-    } catch (e) {
-      console.error('auto summarize:', e)
-    }
-  }, [])
-
   useEffect(() => {
     ensureWS()
     refetchMeetings()
     return onWSMessage((msg) => {
       // Any job state transition can change list badges/titles.
       if (msg.type === 'job-progress' && msg.status !== 'running') refetchMeetings()
-      // Transcription done (live finalize / import / retranscribe): trigger
-      // the meeting's first summary automatically.
-      if (msg.type === 'job-progress' && msg.status === 'completed' && msg.jobType !== 'summarize' && msg.meetingId) {
-        maybeAutoSummarize(msg.meetingId)
-      }
+      // The first summary is started server-side, where the transcript
+      // actually completes — one open page, ten or none, it runs once.
       // Track live segment sizes of the in-flight recording.
       if (msg.type === 'live-transcript' && msg.meetingId === recorder.meetingId && msg.segments) {
         const now = Date.now()
@@ -83,7 +54,7 @@ export default function App() {
         recentSegsRef.current = recentSegsRef.current.slice(-50)
       }
     })
-  }, [refetchMeetings, maybeAutoSummarize])
+  }, [refetchMeetings])
 
   // Detector: every 10s while recording, look for (a) 5 minutes with no
   // audible input at all, or (b) the last >=8 segments all being <=6-char

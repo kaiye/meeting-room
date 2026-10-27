@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gorilla/mux"
 	"github.com/gorilla/websocket"
 
 	"github.com/kaiye/meeting-room/internal/audio"
@@ -117,8 +118,30 @@ func (s *Server) handleLive(w http.ResponseWriter, r *http.Request) {
 		}
 		meeting = m
 	}
+	// Claim before publishing "recording" or touching the PCM file. Recovery
+	// and another resume must not race with session setup or finalization.
+	if !s.claimLive(meeting.ID) {
+		conn.WriteJSON(map[string]string{"type": "error", "error": "该会议正在录制或收尾中"})
+		return
+	}
+	handedOff := false
+	defer func() {
+		if !handedOff {
+			s.markLive(meeting.ID, false)
+		}
+	}()
+	if resume {
+		m, err := s.st.GetMeeting(ctx, meeting.ID)
+		if err != nil || m.Status == "recording" || m.Status == "processing" {
+			conn.WriteJSON(map[string]string{"type": "error", "error": "会议状态已改变,无法续录"})
+			return
+		}
+		meeting = m
+	}
 	if err := s.st.SetMeetingStatus(ctx, meeting.ID, "recording"); err != nil {
 		log.Printf("live: set status: %v", err)
+		conn.WriteJSON(map[string]string{"type": "error", "error": "无法开始录制"})
+		return
 	}
 	if len(start.Participants) > 0 {
 		if err := s.st.SetMeetingParticipants(ctx, meeting.ID, start.Participants); err != nil {
@@ -146,6 +169,7 @@ func (s *Server) handleLive(w http.ResponseWriter, r *http.Request) {
 		conn.WriteJSON(map[string]string{"type": "error", "error": err.Error()})
 		return
 	}
+	defer pcmFile.Close()
 	// Resume: seed the PCM buffer with the existing recording so new audio
 	// appends seamlessly — timestamps continue after the old duration and
 	// the already-transcribed span is never re-rolled.
@@ -243,10 +267,12 @@ func (s *Server) handleLive(w http.ResponseWriter, r *http.Request) {
 done:
 	pcmFile.Close()
 	tailIdx := windowIdx
+	handedOff = true
 	go func() {
 		// Wait for any in-flight rolling pass so the tail lands in order.
 		rollingBusy <- struct{}{}
 		defer func() { <-rollingBusy }()
+		defer s.markLive(meeting.ID, false)
 		s.finalizeLive(meeting.ID, dir, pcmPath, rolledBytes, pcmBytes, language, tailIdx)
 	}()
 	conn.WriteJSON(map[string]string{"type": "stopped", "meetingId": meeting.ID})
@@ -408,9 +434,161 @@ func (s *Server) finalizeLive(meetingID, dir, pcmPath string, rolledBytes, pcmBy
 		log.Printf("live: finalize: %v", err)
 	}
 	log.Printf("live: meeting %s completed (%.0fs audio)", meetingID, durationS)
+	jobs.MaybeAutoSummarize(ctx, s.st, s.hub, meetingID)
 	s.hub.Broadcast(map[string]any{
 		"type": "job-progress", "meetingId": meetingID,
 		"jobType": "live", "status": "completed", "progress": 100,
 		"message": "录音转录完成",
+	})
+}
+
+func (s *Server) markLive(meetingID string, active bool) {
+	s.liveMu.Lock()
+	defer s.liveMu.Unlock()
+	if active {
+		s.liveActive[meetingID] = true
+	} else {
+		delete(s.liveActive, meetingID)
+	}
+}
+
+// claimLive atomically reserves a recording through setup and finalization.
+func (s *Server) claimLive(meetingID string) bool {
+	s.liveMu.Lock()
+	defer s.liveMu.Unlock()
+	if s.liveActive[meetingID] {
+		return false
+	}
+	if s.liveActive == nil {
+		s.liveActive = make(map[string]bool)
+	}
+	s.liveActive[meetingID] = true
+	return true
+}
+
+func (s *Server) isLiveActive(meetingID string) bool {
+	s.liveMu.Lock()
+	defer s.liveMu.Unlock()
+	return s.liveActive[meetingID]
+}
+
+// stopStuckRecording is the manual way out of a meeting left in
+// "recording" — the state a live session exits only over its WebSocket, so
+// a crash, a Ctrl-C or a restart strands it there forever. Stranded is not
+// harmless: summary.go and truncate both refuse to touch a meeting in this
+// status, and resuming the recording is refused too (live.go rejects
+// resume while status is recording), so the meeting is effectively locked.
+//
+// A human asserting "that recording is dead" is the only trustworthy
+// signal available. The server cannot decide it alone: `recording` doubles
+// as the lock that blocks concurrent resume, and whether its holder is
+// still alive is unknowable from another process — nothing stops a second
+// instance from opening the same data dir. What the server CAN rule out is
+// the case that actually matters, a session live in THIS process, which is
+// what liveActive answers.
+func (s *Server) stopStuckRecording(w http.ResponseWriter, r *http.Request) {
+	id := mux.Vars(r)["id"]
+	if !s.claimLive(id) {
+		writeError(w, http.StatusConflict, "这场录音正在本机录制或收尾中,请等待完成")
+		return
+	}
+	handedOff := false
+	defer func() {
+		if !handedOff {
+			s.markLive(id, false)
+		}
+	}()
+	meeting, err := s.st.GetMeeting(r.Context(), id)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	if meeting.Status != "recording" {
+		writeError(w, http.StatusConflict, "该会议不在录制状态,无需停止")
+		return
+	}
+	dir := filepath.Join(s.cfg.DataDir, "meetings", id)
+	pcmPath := filepath.Join(dir, "live.pcm")
+	fi, statErr := os.Stat(pcmPath)
+	if statErr != nil && !os.IsNotExist(statErr) {
+		writeError(w, http.StatusInternalServerError, "无法读取录制音频,请检查文件权限后重试")
+		return
+	}
+	if statErr == nil && !fi.Mode().IsRegular() {
+		writeError(w, http.StatusInternalServerError, "录制音频不是普通文件")
+		return
+	}
+	hasPCM := statErr == nil && fi.Size() > 0
+
+	// Resumes retain the PREVIOUS AudioPath. A surviving PCM buffer takes
+	// precedence: it includes the newly recorded tail that still needs saving.
+	if !hasPCM && meeting.AudioPath != nil {
+		if audioInfo, err := os.Stat(*meeting.AudioPath); err != nil || !audioInfo.Mode().IsRegular() || audioInfo.Size() == 0 {
+			writeError(w, http.StatusInternalServerError, "已保存的录音不可用,无法标记完成")
+			return
+		}
+		if err := s.st.SetMeetingStatus(r.Context(), id, "completed"); err != nil {
+			writeStoreError(w, err)
+			return
+		}
+		jobs.MaybeAutoSummarize(r.Context(), s.st, s.hub, id)
+		s.hub.Broadcast(map[string]any{
+			"type": "job-progress", "meetingId": id,
+			"jobType": "live", "status": "completed", "progress": 100,
+			"message": "已标记录制结束",
+		})
+		writeJSON(w, http.StatusOK, map[string]string{"status": "completed"})
+		return
+	}
+
+	if !hasPCM {
+		// No audio ever landed — same verdict finalizeLive reaches.
+		if err := s.st.SetMeetingStatus(r.Context(), id, "failed"); err != nil {
+			writeStoreError(w, err)
+			return
+		}
+		s.hub.Broadcast(map[string]any{
+			"type": "job-progress", "meetingId": id,
+			"jobType": "live", "status": "failed", "progress": 100,
+			"message": "录制中断且没有录到音频",
+		})
+		writeJSON(w, http.StatusOK, map[string]string{"status": "failed"})
+		return
+	}
+
+	// rolledBytes lived in the dead session's memory. The stored segments
+	// are the surviving copy of that progress: rolling passes cut on a
+	// >=300ms pause and append as they finish, so resuming from the last
+	// segment end re-covers only the pause itself, not speech.
+	pcmBytes := fi.Size()
+	endMs, err := s.st.MaxSegmentEndMs(r.Context(), id)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	rolledBytes := min(pcmBytes, max(int64(0), endMs)*int64(transcribe.SampleRate*transcribe.BytesPerSample)/1000) &^ 1
+	maxWin, err := s.st.MaxSegmentWindow(r.Context(), id)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	tailIdx := maxWin + 1
+	language := "zh"
+	if meeting.Language != nil && *meeting.Language != "" {
+		language = *meeting.Language
+	}
+
+	log.Printf("live: manual stop for stranded meeting %s (%.0fs audio, %.0fs untranscribed)",
+		id, float64(pcmBytes)/32000, float64(pcmBytes-rolledBytes)/32000)
+	// Encoding 90 minutes and transcribing the tail takes far longer than a
+	// request: report acceptance, let the hub announce completion.
+	handedOff = true
+	go func() {
+		defer s.markLive(id, false)
+		s.finalizeLive(id, dir, pcmPath, rolledBytes, pcmBytes, language, tailIdx)
+	}()
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"status":              "finalizing",
+		"untranscribedTailMs": (pcmBytes - rolledBytes) * 1000 / 32000,
 	})
 }

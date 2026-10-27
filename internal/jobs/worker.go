@@ -93,6 +93,12 @@ func (w *Worker) process(ctx context.Context, job *store.Job) {
 	if ferr := w.st.FinishJob(ctx, job.ID, status, err); ferr != nil {
 		log.Printf("worker: finish job %s: %v", job.ID, ferr)
 	}
+	// A fresh transcript (import / retranscribe) earns the meeting its
+	// first summary; MaybeAutoSummarize is the one that decides whether
+	// this meeting still needs one.
+	if status == "completed" && job.Type != "summarize" {
+		MaybeAutoSummarize(ctx, w.st, w.hub, job.MeetingID)
+	}
 	w.emit(job, status, 100, errString(err))
 }
 

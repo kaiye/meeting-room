@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 
@@ -87,11 +88,12 @@ func (s *Server) generateSummary(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "转录尚未完成(录音收尾或转录进行中),现在生成会缺失结尾内容,请稍后再试")
 		return
 	}
-	if err := s.st.StartSummary(r.Context(), id, body.Template, body.CustomPrompt); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+	// Queue atomically: manual requests and server-side automation may race.
+	job, err := s.st.StartSummarizeJob(r.Context(), id, body.Template, body.CustomPrompt)
+	if errors.Is(err, store.ErrSummaryBusy) {
+		writeError(w, http.StatusConflict, "该会议的纪要正在生成中,请等待本次完成或先点取消")
 		return
 	}
-	job, err := s.st.CreateJob(r.Context(), id, "summarize")
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -107,7 +109,7 @@ func (s *Server) generateSummary(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) updateSummaryPrompt(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Template string `json:"template"`
+		Template     string `json:"template"`
 		CustomPrompt string `json:"customPrompt"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
